@@ -1,0 +1,56 @@
+sports:
+  lol:
+    enabled: true
+    favorite_threshold: 0.60
+    pct_drop_threshold: 0.10      # 10% drop required
+    abs_drop_threshold: 0.05      # 5 cents absolute drop required
+    time_window_seconds: 180      # Monitor 3-minute window
+    position_sizes: [25, 10]      # Entry 1: $25, Entry 2: $10
+
+  dota2:
+    enabled: true
+    favorite_threshold: 0.60
+    pct_drop_threshold: 0.10
+    abs_drop_threshold: 0.05
+    time_window_seconds: 180
+    position_sizes: [25, 10]
+
+  nba:
+    enabled: true
+    favorite_threshold: 0.60
+    pct_drop_threshold: 0.08      # 8% drop required
+    abs_drop_threshold: 0.04      # 4 cents absolute drop required
+    time_window_seconds: 300      # Monitor 5-minute window
+    min_time_remaining: 300       # Skip if less than 5 minutes remaining
+    position_sizes: [10, 3]       # Entry 1: $10, Entry 2: $3
+
+  nhl:
+    enabled: true
+    favorite_threshold: 0.60
+    pct_drop_threshold: 0.08
+    abs_drop_threshold: 0.04
+    time_window_seconds: 300
+    min_time_remaining: 300
+    position_sizes: [10, 3]
+
+risk:
+  max_entries_per_match: 2
+  allow_reentry_after_tp: true
+  min_balance_reserve: 50
+
+trading:
+  # Slippage tolerance for market orders (in percentage)
+  slippage_tolerance: 0.02       # 2% slippage allowed
+
+  # Order expiration time (seconds)
+  order_expiration: 300          # 5 minutes
+
+  # Minimum tick size for price improvements
+  tick_size: 0.01
+
+logging:
+  level: INFO
+  log_file: polysport.log
+
+database:
+  path: data/trades.db

@@ -1,0 +1,36 @@
+# Sensitive files - NEVER commit these
+.env
+*.key
+*.pem
+credentials.json
+config/credentials.json
+data/queue.json
+data/price_cache.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Data
+data/*.json
+!data/.gitkeep

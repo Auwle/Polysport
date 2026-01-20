@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir:*)",
+      "Bash(python:*)",
+      "Bash(curl:*)",
+      "Bash(echo:*)",
+      "Bash(tree:*)",
+      "Bash(del debug_scanner.py debug_slugs.py test_bot.py test_scanner_filtered.py)",
+      "Bash(ls:*)",
+      "Bash(timeout /t 10)",
+      "Bash(ping:*)",
+      "Bash(taskkill:*)",
+      "Bash(xargs:*)",
+      "Bash(kill:*)",
+      "Bash(git init:*)",
+      "Bash(git branch:*)",
+      "Bash(git add:*)"
+    ]
+  }
+}
