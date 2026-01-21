@@ -91,13 +91,16 @@ class MarketScanner:
                 if len(outcomes) != 2 or len(prices) != 2:
                     continue
 
-                # Parse endDate first (needed for price caching logic)
+                # Parse endDate and startDate
                 end_date_str = market.get('endDate', None)
-                if not end_date_str:
+                start_date_str = market.get('startDate', None)
+
+                if not end_date_str or not start_date_str:
                     continue
 
                 try:
                     end_date = datetime.fromisoformat(end_date_str.replace('Z', '+00:00'))
+                    start_date = datetime.fromisoformat(start_date_str.replace('Z', '+00:00'))
                     now = datetime.now(timezone.utc)
 
                     # Skip if match already ended
@@ -111,25 +114,22 @@ class MarketScanner:
                 token_id_a = clob_token_ids[0] if len(clob_token_ids) > 0 else None
                 token_id_b = clob_token_ids[1] if len(clob_token_ids) > 1 else None
 
-                # Price caching strategy:
-                # - If already cached → Use cached price (locked in during stable period)
-                # - If NOT cached AND in stable window (1h-5min before match) → Cache current price
-                # - Otherwise → Use current price without caching (too early, unstable)
-
-                # Calculate time until match
-                time_until_match = (end_date - now).total_seconds() / 60  # minutes
+                # PRICE STRATEGY: Lock prices on first scan
+                # - If already cached → Use cached prices (locked from first scan)
+                # - If NOT cached → Use current prices AND cache them immediately
+                # This ensures prices don't change even if bot restarts
 
                 if token_id_a and self.price_cache.has_cached_price(market_slug):
                     # Already cached → Use cached prices
                     price_a = self.price_cache.get_cached_price(market_slug, token_id_a)
                     price_b = self.price_cache.get_cached_price(market_slug, token_id_b)
                 else:
-                    # Not cached yet → Use current prices
+                    # Not cached yet → Use current prices and cache them NOW
                     price_a = Decimal(str(prices[0]))
                     price_b = Decimal(str(prices[1]))
 
-                    # Cache if we're in stable window: 5min - 60min before match
-                    if 5 <= time_until_match <= 60 and token_id_a and token_id_b:
+                    # Cache immediately to lock prices for future scans
+                    if token_id_a and token_id_b:
                         self.price_cache.cache_price(market_slug, token_id_a, price_a, outcomes[0])
                         self.price_cache.cache_price(market_slug, token_id_b, price_b, outcomes[1])
 

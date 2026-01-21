@@ -34,3 +34,5 @@ logs/
 # Data
 data/*.json
 !data/.gitkeep
+*.env
+config/secrets.env
