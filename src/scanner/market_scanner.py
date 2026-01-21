@@ -109,27 +109,30 @@ class MarketScanner:
                 except:
                     continue
 
-                # Get market slug for caching
+                # Get market slug and volume for caching
                 market_slug = market.get('slug', '')
+                market_volume = Decimal(str(market.get('volume', 0)))
                 token_id_a = clob_token_ids[0] if len(clob_token_ids) > 0 else None
                 token_id_b = clob_token_ids[1] if len(clob_token_ids) > 1 else None
 
-                # PRICE STRATEGY: Lock prices on first scan
+                # PRICE STRATEGY: Lock prices on first scan (only for markets with volume >= $1,000)
                 # - If already cached → Use cached prices (locked from first scan)
-                # - If NOT cached → Use current prices AND cache them immediately
-                # This ensures prices don't change even if bot restarts
+                # - If NOT cached AND volume >= $1,000 → Cache current prices immediately
+                # - If NOT cached AND volume < $1,000 → Use current prices WITHOUT caching (unreliable)
+                # This ensures we only cache stable prices from markets with real trading activity
 
                 if token_id_a and self.price_cache.has_cached_price(market_slug):
                     # Already cached → Use cached prices
                     price_a = self.price_cache.get_cached_price(market_slug, token_id_a)
                     price_b = self.price_cache.get_cached_price(market_slug, token_id_b)
                 else:
-                    # Not cached yet → Use current prices and cache them NOW
+                    # Not cached yet → Use current prices
                     price_a = Decimal(str(prices[0]))
                     price_b = Decimal(str(prices[1]))
 
-                    # Cache immediately to lock prices for future scans
-                    if token_id_a and token_id_b:
+                    # Only cache if market has sufficient volume (>= $1,000)
+                    # Low volume markets have unreliable prices that shouldn't be locked
+                    if token_id_a and token_id_b and market_volume >= Decimal("1000"):
                         self.price_cache.cache_price(market_slug, token_id_a, price_a, outcomes[0])
                         self.price_cache.cache_price(market_slug, token_id_b, price_b, outcomes[1])
 
