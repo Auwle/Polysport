@@ -132,21 +132,27 @@ class MarketScanner:
                 token_id_a = clob_token_ids[0] if len(clob_token_ids) > 0 else None
                 token_id_b = clob_token_ids[1] if len(clob_token_ids) > 1 else None
 
-                # PRICE STRATEGY: Lock prices on first scan (ALWAYS cache, regardless of volume)
-                # - If already cached → Use cached prices (locked from first scan)
-                # - If NOT cached → Cache current prices immediately
-                # This ensures consistent pricing throughout the trading window
+                # PRICE CACHING STRATEGY:
+                # Cache prices in window: [match_start - 180min, match_start]
+                # - If already cached → Use cached prices (locked)
+                # - If NOT cached AND in cache window → Cache current prices
+                # - If NOT cached AND outside cache window → Use current prices without caching
+
+                # Calculate time until match start (in minutes)
+                time_until_start_minutes = time_until_start * 60  # Convert hours to minutes
 
                 if token_id_a and self.price_cache.has_cached_price(market_slug):
                     # Already cached → Use cached prices
                     price_a = self.price_cache.get_cached_price(market_slug, token_id_a)
                     price_b = self.price_cache.get_cached_price(market_slug, token_id_b)
                 else:
-                    # Not cached yet → Cache current prices NOW (regardless of volume)
+                    # Not cached yet → Use current prices
                     price_a = Decimal(str(prices[0]))
                     price_b = Decimal(str(prices[1]))
 
-                    if token_id_a and token_id_b:
+                    # Only cache if in the cache window: 180min before match to match start
+                    # Example: Match at 4pm → Cache between 1pm and 4pm
+                    if token_id_a and token_id_b and 0 <= time_until_start_minutes <= 180:
                         self.price_cache.cache_price(market_slug, token_id_a, price_a, outcomes[0])
                         self.price_cache.cache_price(market_slug, token_id_b, price_b, outcomes[1])
 
