@@ -91,21 +91,38 @@ class MarketScanner:
                 if len(outcomes) != 2 or len(prices) != 2:
                     continue
 
-                # Parse endDate and startDate
+                # Parse gameStartTime (actual match start) and endDate
+                game_start_str = market.get('gameStartTime', None)
                 end_date_str = market.get('endDate', None)
-                start_date_str = market.get('startDate', None)
 
-                if not end_date_str or not start_date_str:
+                if not game_start_str or not end_date_str:
                     continue
 
                 try:
+                    # Parse gameStartTime: "2026-01-22 16:00:00+00"
+                    game_start = datetime.fromisoformat(game_start_str)
                     end_date = datetime.fromisoformat(end_date_str.replace('Z', '+00:00'))
-                    start_date = datetime.fromisoformat(start_date_str.replace('Z', '+00:00'))
                     now = datetime.now(timezone.utc)
+
+                    # Time window: [game_start - 24h, game_start + 60min]
+                    # Example: Match at 4pm 23/1 → Track from 4pm 22/1 to 5pm 23/1
+                    time_until_start = (game_start - now).total_seconds() / 3600  # hours
+                    time_since_start = (now - game_start).total_seconds() / 60    # minutes
+
+                    # Skip if match starts more than 24 hours from now
+                    if time_until_start > 24:
+                        continue
+
+                    # Skip if match started more than 60 minutes ago
+                    if time_since_start > 60:
+                        continue
 
                     # Skip if match already ended
                     if end_date < now:
                         continue
+
+                    # Use actual game start time
+                    start_date = game_start
                 except:
                     continue
 
@@ -115,24 +132,21 @@ class MarketScanner:
                 token_id_a = clob_token_ids[0] if len(clob_token_ids) > 0 else None
                 token_id_b = clob_token_ids[1] if len(clob_token_ids) > 1 else None
 
-                # PRICE STRATEGY: Lock prices on first scan (only for markets with volume >= $1,000)
+                # PRICE STRATEGY: Lock prices on first scan (ALWAYS cache, regardless of volume)
                 # - If already cached → Use cached prices (locked from first scan)
-                # - If NOT cached AND volume >= $1,000 → Cache current prices immediately
-                # - If NOT cached AND volume < $1,000 → Use current prices WITHOUT caching (unreliable)
-                # This ensures we only cache stable prices from markets with real trading activity
+                # - If NOT cached → Cache current prices immediately
+                # This ensures consistent pricing throughout the trading window
 
                 if token_id_a and self.price_cache.has_cached_price(market_slug):
                     # Already cached → Use cached prices
                     price_a = self.price_cache.get_cached_price(market_slug, token_id_a)
                     price_b = self.price_cache.get_cached_price(market_slug, token_id_b)
                 else:
-                    # Not cached yet → Use current prices
+                    # Not cached yet → Cache current prices NOW (regardless of volume)
                     price_a = Decimal(str(prices[0]))
                     price_b = Decimal(str(prices[1]))
 
-                    # Only cache if market has sufficient volume (>= $1,000)
-                    # Low volume markets have unreliable prices that shouldn't be locked
-                    if token_id_a and token_id_b and market_volume >= Decimal("1000"):
+                    if token_id_a and token_id_b:
                         self.price_cache.cache_price(market_slug, token_id_a, price_a, outcomes[0])
                         self.price_cache.cache_price(market_slug, token_id_b, price_b, outcomes[1])
 
@@ -160,8 +174,8 @@ class MarketScanner:
                    (price_b == Decimal("0") or price_b == Decimal("1")):
                     continue
 
-                # Calculate entry time (already have end_date from above)
-                entry_time = end_date - timedelta(minutes=5)
+                # Entry time is the match start time (we allow orders from start-60min to start+60min)
+                entry_time = start_date
 
                 # Identify strong and weak team
                 if price_a > price_b:
@@ -184,7 +198,7 @@ class MarketScanner:
                     'volume': float(market_volume) if market_volume else 0.0,
                     'end_date': market.get('endDate', 'N/A'),
                     'entry_time': entry_time.isoformat(),
-                    'match_start_time': end_date.isoformat(),
+                    'match_start_time': start_date.isoformat(),
                     'strong_team': {
                         'name': outcomes[strong_team_idx],
                         'price': float(strong_team_price),

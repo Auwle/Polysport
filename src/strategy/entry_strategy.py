@@ -23,6 +23,7 @@ class EntryStrategy:
     # Strategy table: (min_price, max_price) -> (entry1, entry2)
     # Ranges are inclusive on both ends and cover decimals (e.g., 79.5 matches 75-80 range)
     STRATEGY_TABLE = {
+        (0, 60): (26, 23),  # Balanced matches: Strong ≤60¢ → Strong @26¢, Weak @23¢
         (61, 63.99): (42, 27),
         (64, 66.99): (44, 31),
         (67, 69.99): (45, 33),
@@ -82,33 +83,60 @@ class EntryStrategy:
         if not entry_config:
             return None
 
-        # Create two limit buy orders for STRONG team (the favorite)
-        strong_team_token_id = market['strong_team']['token_id']
+        # BALANCED MATCH: Strong ≤ 60¢ → Buy both teams
+        if strong_price_cents <= 60:
+            orders = [
+                {
+                    'order_type': 'limit_buy',
+                    'token_id': market['strong_team']['token_id'],
+                    'team_name': market['strong_team']['name'],
+                    'price': entry_config['entry1_price'],  # 26¢
+                    'price_cents': entry_config['entry1_cents'],
+                    'amount_usd': self.entry_size_usd,
+                    'entry_number': 1,
+                    'market_question': market['question'],
+                    'market_slug': market['slug']
+                },
+                {
+                    'order_type': 'limit_buy',
+                    'token_id': market['weak_team']['token_id'],  # WEAK team
+                    'team_name': market['weak_team']['name'],
+                    'price': entry_config['entry2_price'],  # 23¢
+                    'price_cents': entry_config['entry2_cents'],
+                    'amount_usd': self.entry_size_usd,
+                    'entry_number': 2,
+                    'market_question': market['question'],
+                    'market_slug': market['slug']
+                }
+            ]
+        else:
+            # NON-BALANCED MATCH: Strong > 60¢ → Buy strong team twice (existing strategy)
+            strong_team_token_id = market['strong_team']['token_id']
 
-        orders = [
-            {
-                'order_type': 'limit_buy',
-                'token_id': strong_team_token_id,
-                'team_name': market['strong_team']['name'],
-                'price': entry_config['entry1_price'],
-                'price_cents': entry_config['entry1_cents'],
-                'amount_usd': self.entry_size_usd,
-                'entry_number': 1,
-                'market_question': market['question'],
-                'market_slug': market['slug']
-            },
-            {
-                'order_type': 'limit_buy',
-                'token_id': strong_team_token_id,
-                'team_name': market['strong_team']['name'],
-                'price': entry_config['entry2_price'],
-                'price_cents': entry_config['entry2_cents'],
-                'amount_usd': self.entry_size_usd,
-                'entry_number': 2,
-                'market_question': market['question'],
-                'market_slug': market['slug']
-            }
-        ]
+            orders = [
+                {
+                    'order_type': 'limit_buy',
+                    'token_id': strong_team_token_id,
+                    'team_name': market['strong_team']['name'],
+                    'price': entry_config['entry1_price'],
+                    'price_cents': entry_config['entry1_cents'],
+                    'amount_usd': self.entry_size_usd,
+                    'entry_number': 1,
+                    'market_question': market['question'],
+                    'market_slug': market['slug']
+                },
+                {
+                    'order_type': 'limit_buy',
+                    'token_id': strong_team_token_id,
+                    'team_name': market['strong_team']['name'],
+                    'price': entry_config['entry2_price'],
+                    'price_cents': entry_config['entry2_cents'],
+                    'amount_usd': self.entry_size_usd,
+                    'entry_number': 2,
+                    'market_question': market['question'],
+                    'market_slug': market['slug']
+                }
+            ]
 
         return orders
 
@@ -121,9 +149,10 @@ class EntryStrategy:
         """
         Calculate take profit orders based on which entries were filled.
 
-        Strategy:
-        - If only Entry 1 filled: 50% at strong_start_price, 50% at 0.96
-        - If both entries filled: 50% at entry1_price, 50% at strong_start_price
+        NEW Strategy:
+        - Strong ≤ 70¢ + only 1 entry filled: NO TP (run to resolution)
+        - Strong ≤ 70¢ + both entries filled: TP 100% at start price
+        - Strong > 70¢: NO TP (run to resolution)
 
         Args:
             filled_entries: List of filled entry orders with entry_number and price
@@ -131,71 +160,32 @@ class EntryStrategy:
             total_position_size: Total shares we own
 
         Returns:
-            List of TP order specs with price and size
+            List of TP order specs with price and size (empty list = no TP)
         """
         tp_orders = []
 
         # Determine which entries were filled
         entry_numbers = {e['entry_number'] for e in filled_entries}
+        num_entries_filled = len(entry_numbers)
 
-        # Get entry prices from filled orders
-        entry1_price = None
-        entry2_price = None
+        # Check strong team price
+        if strong_team_start_price_cents > 70:
+            # Strong > 70¢: NO TP, run to resolution
+            return []
 
-        for entry in filled_entries:
-            if entry['entry_number'] == 1:
-                entry1_price = Decimal(str(entry['price']))
-            elif entry['entry_number'] == 2:
-                entry2_price = Decimal(str(entry['price']))
+        # Strong ≤ 70¢
+        if num_entries_filled == 1:
+            # Only 1 entry filled: NO TP, run to resolution
+            return []
 
-        # Strong team start price in decimal
-        strong_start_decimal = Decimal(str(strong_team_start_price_cents)) / Decimal("100")
+        elif num_entries_filled >= 2:
+            # Both entries filled: TP 100% at start price
+            strong_start_decimal = Decimal(str(strong_team_start_price_cents)) / Decimal("100")
 
-        # Split position 50/50
-        half_position = total_position_size / Decimal("2")
-
-        if 1 in entry_numbers and 2 not in entry_numbers:
-            # Case 1: Only Entry 1 filled
-            # TP1: 50% at strong_start_price
-            # TP2: 50% at 0.96
             tp_orders.append({
                 'price': strong_start_decimal,
-                'size': half_position,
-                'label': 'TP1 (50% at start price)'
-            })
-            tp_orders.append({
-                'price': Decimal("0.96"),
-                'size': half_position,
-                'label': 'TP2 (50% at 0.96)'
-            })
-
-        elif 1 in entry_numbers and 2 in entry_numbers:
-            # Case 2: Both entries filled
-            # TP1: 50% at entry1_price
-            # TP2: 50% at strong_start_price
-            tp_orders.append({
-                'price': entry1_price,
-                'size': half_position,
-                'label': 'TP1 (50% at Entry1 price)'
-            })
-            tp_orders.append({
-                'price': strong_start_decimal,
-                'size': half_position,
-                'label': 'TP2 (50% at start price)'
-            })
-
-        elif 2 in entry_numbers and 1 not in entry_numbers:
-            # Edge case: Only Entry 2 filled (Entry 1 skipped)
-            # Use same logic as Entry 1 only
-            tp_orders.append({
-                'price': strong_start_decimal,
-                'size': half_position,
-                'label': 'TP1 (50% at start price)'
-            })
-            tp_orders.append({
-                'price': Decimal("0.96"),
-                'size': half_position,
-                'label': 'TP2 (50% at 0.96)'
+                'size': total_position_size,  # 100% of position
+                'label': 'TP (100% at start price)'
             })
 
         return tp_orders

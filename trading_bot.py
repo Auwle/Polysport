@@ -294,11 +294,11 @@ def main():
 
     # Create and configure bot
     bot = LOLTradingBot(
-        check_interval_seconds=300,  # 5 minutes
-        entry_size_usd=Decimal("3.5"),
+        check_interval_seconds=60,  # 1 minute
+        entry_size_usd=Decimal("5"),
         min_volume_usd=Decimal("1000"),
         max_total_price=Decimal("110"),
-        min_strong_team_price=Decimal("60")
+        min_strong_team_price=Decimal("0")  # Allow balanced matches (≤60¢)
     )
 
     # Add any markets where you've already taken profit manually

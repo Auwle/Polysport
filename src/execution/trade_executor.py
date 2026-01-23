@@ -244,7 +244,14 @@ class TradeExecutor:
         already_profitable_markets: set
     ) -> int:
         """
-        Check for filled entry orders and set take profit orders using new 50/50 strategy.
+        Check for filled entry orders and set take profit orders.
+
+        NEW Logic:
+        1. Get all open orders from API (BUY and SELL side)
+        2. For each market, check how many BUY entries are filled
+        3. Check current position size
+        4. Check how many shares are already in SELL orders
+        5. If position > sell orders, place TP for the difference
 
         Args:
             strategy: EntryStrategy instance with calculate_take_profit_orders method
@@ -255,7 +262,10 @@ class TradeExecutor:
         """
         tp_placed = 0
 
-        # Get markets with active orders
+        # Get all open orders from CLOB API
+        all_open_orders = self.client.get_open_orders()
+
+        # Get markets with tracked orders
         markets = self.order_monitor.get_markets_with_orders()
 
         for market_slug in markets:
@@ -263,73 +273,90 @@ class TradeExecutor:
             if market_slug in already_profitable_markets:
                 continue
 
-            # Get all orders for this market
+            # Get tracked orders for this market
             market_orders = self.order_monitor.get_active_orders_by_market(market_slug)
 
-            # Find filled BUY orders
-            filled_entries = []
-            token_id = None
-            strong_team_price_cents = None
+            # Group by token_id (handle both strong and weak team orders)
+            tokens_in_market = {}
 
             for order_data in market_orders:
                 if order_data['side'] != 'BUY':
                     continue
 
-                order_id = order_data['order_id']
-                current_token_id = order_data['token_id']
+                token_id = order_data['token_id']
+                if token_id not in tokens_in_market:
+                    tokens_in_market[token_id] = {
+                        'buy_orders': [],
+                        'strong_team_price_cents': order_data.get('strong_team_price_cents')
+                    }
 
-                # Check if this entry has filled (has position)
-                position_size = self.client.get_token_balance(current_token_id)
+                tokens_in_market[token_id]['buy_orders'].append(order_data)
 
-                if position_size > 0:
-                    # Mark as filled
-                    self.order_monitor.mark_order_filled(order_id)
+            # Check each token (team) in this market
+            for token_id, token_data in tokens_in_market.items():
+                buy_orders = token_data['buy_orders']
+                strong_team_price_cents = token_data['strong_team_price_cents']
 
-                    # Store filled entry info
+                # Count how many BUY orders still open (not filled)
+                open_buy_count = sum(
+                    1 for order in all_open_orders
+                    if order.get('asset_id') == token_id and order.get('side') == 'BUY'
+                )
+
+                # Count filled entries = total entries - open entries
+                total_entries = len(buy_orders)
+                filled_entries_count = total_entries - open_buy_count
+
+                # Get current position size
+                position_size = self.client.get_token_balance(token_id)
+
+                if position_size <= 0:
+                    continue  # No position, skip
+
+                # Check existing SELL orders for this token
+                existing_sell_size = sum(
+                    Decimal(str(order.get('original_size', 0)))
+                    for order in all_open_orders
+                    if order.get('asset_id') == token_id and order.get('side') == 'SELL'
+                )
+
+                # Calculate how much we need to sell
+                unsold_position = position_size - existing_sell_size
+
+                if unsold_position <= Decimal("0.01"):
+                    continue  # Already have enough sell orders
+
+                # Build filled_entries list for strategy
+                filled_entries = []
+                for i, order_data in enumerate(buy_orders[:filled_entries_count]):
                     filled_entries.append({
-                        'entry_number': order_data.get('entry_number'),
+                        'entry_number': order_data.get('entry_number', i + 1),
                         'price': order_data['price']
                     })
 
-                    # Store token_id and strong_team_price (same for all entries in market)
-                    if token_id is None:
-                        token_id = current_token_id
-                    if strong_team_price_cents is None:
-                        strong_team_price_cents = order_data.get('strong_team_price_cents')
+                # Mark filled orders
+                for order_data in buy_orders[:filled_entries_count]:
+                    self.order_monitor.mark_order_filled(order_data['order_id'])
 
-            # If we have filled entries, check if we need to place TP
-            if filled_entries and token_id:
-                # Check if TP already exists
-                existing_tp = any(
-                    o['side'] == 'SELL' and
-                    o['token_id'] == token_id and
-                    o['status'] == 'active'
-                    for o in market_orders
-                )
+                # Calculate TP orders
+                if strong_team_price_cents:
+                    tp_specs = strategy.calculate_take_profit_orders(
+                        filled_entries=filled_entries,
+                        strong_team_start_price_cents=strong_team_price_cents,
+                        total_position_size=unsold_position  # Only sell what's not already in orders
+                    )
 
-                if not existing_tp:
-                    # Get total position size
-                    total_position = self.client.get_token_balance(token_id)
-
-                    if total_position > 0 and strong_team_price_cents:
-                        # Calculate TP orders using new 50/50 strategy
-                        tp_specs = strategy.calculate_take_profit_orders(
-                            filled_entries=filled_entries,
-                            strong_team_start_price_cents=strong_team_price_cents,
-                            total_position_size=total_position
+                    # Place TP orders
+                    for tp_spec in tp_specs:
+                        tp_order_id = self.place_take_profit_orders(
+                            token_id=token_id,
+                            market_slug=market_slug,
+                            team_name=tp_spec['label'],
+                            tp_price=tp_spec['price'],
+                            position_size=tp_spec['size']
                         )
 
-                        # Place TP orders
-                        for tp_spec in tp_specs:
-                            tp_order_id = self.place_take_profit_orders(
-                                token_id=token_id,
-                                market_slug=market_slug,
-                                team_name=tp_spec['label'],
-                                tp_price=tp_spec['price'],
-                                position_size=tp_spec['size']
-                            )
-
-                            if tp_order_id:
-                                tp_placed += 1
+                        if tp_order_id:
+                            tp_placed += 1
 
         return tp_placed
