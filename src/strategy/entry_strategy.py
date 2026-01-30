@@ -11,33 +11,33 @@ class EntryStrategy:
     """
     Entry strategy based on strong team price ranges.
 
-    Strategy table (from image):
-    - Price 61-63: Entry 1 at 42¢, Entry 2 at 27¢
-    - Price 64-66: Entry 1 at 44¢, Entry 2 at 31¢
-    - Price 67-69: Entry 1 at 45¢, Entry 2 at 33¢
-    - Price 70-74: Entry 1 at 52¢, Entry 2 at 38¢
-    - Price 75-79: Entry 1 at 58¢, Entry 2 at 42¢
-    - Price 80+:   Entry 1 at 68¢, Entry 2 at 55¢
+    Strategy table (from image, adjusted -1¢):
+    - Price 61-63: Entry 1 at 41¢, Entry 2 at 26¢
+    - Price 64-66: Entry 1 at 43¢, Entry 2 at 30¢
+    - Price 67-69: Entry 1 at 44¢, Entry 2 at 32¢
+    - Price 70-74: Entry 1 at 51¢, Entry 2 at 37¢
+    - Price 75-79: Entry 1 at 57¢, Entry 2 at 41¢
+    - Price 80+:   Entry 1 at 67¢, Entry 2 at 54¢
     """
 
     # Strategy table: (min_price, max_price) -> (entry1, entry2)
     # Ranges are inclusive on both ends and cover decimals (e.g., 79.5 matches 75-80 range)
     STRATEGY_TABLE = {
-        (0, 60): (26, 23),  # Balanced matches: Strong ≤60¢ → Strong @26¢, Weak @23¢
-        (61, 63.99): (42, 27),
-        (64, 66.99): (44, 31),
-        (67, 69.99): (45, 33),
-        (70, 74.99): (52, 38),
-        (75, 79.99): (58, 42),
-        (80, 100): (68, 55),  # 80+ means up to 100
+        (0, 60): (25, 22),  # Balanced matches: Strong ≤60¢ → Strong @25¢, Weak @22¢
+        (61, 63.99): (41, 26),
+        (64, 66.99): (43, 30),
+        (67, 69.99): (44, 32),
+        (70, 74.99): (51, 37),
+        (75, 79.99): (57, 41),
+        (80, 100): (67, 54),  # 80+ means up to 100
     }
 
-    def __init__(self, entry_size_usd: Decimal = Decimal("5")):
+    def __init__(self, entry_size_usd: Decimal = Decimal("3.5")):
         """
         Initialize entry strategy.
 
         Args:
-            entry_size_usd: Size of each entry in USD (default $5)
+            entry_size_usd: Size of each entry in USD (default $3.5)
         """
         self.entry_size_usd = entry_size_usd
 

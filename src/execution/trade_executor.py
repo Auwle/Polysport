@@ -241,122 +241,193 @@ class TradeExecutor:
     def check_filled_positions_and_set_tp(
         self,
         strategy,
-        already_profitable_markets: set
+        already_profitable_markets: set,
+        price_cache: dict = None
     ) -> int:
         """
-        Check for filled entry orders and set take profit orders.
+        Check ALL positions and set take profit orders.
 
-        NEW Logic:
-        1. Get all open orders from API (BUY and SELL side)
-        2. For each market, check how many BUY entries are filled
-        3. Check current position size
-        4. Check how many shares are already in SELL orders
-        5. If position > sell orders, place TP for the difference
+        NEW LOGIC (Simple and Robust):
+        1. Get ALL current positions from Polymarket Data API
+        2. Get ALL open SELL orders from CLOB API
+        3. For each position:
+           - Check if there's already a SELL order covering it
+           - If not enough SELL orders, get start price from price_cache
+           - Apply strategy and place SELL order
+        4. Verify all positions have SELL orders
 
         Args:
             strategy: EntryStrategy instance with calculate_take_profit_orders method
             already_profitable_markets: Set of markets to skip
+            price_cache: Dict of cached prices {market_slug:token_id -> price_data}
 
         Returns:
             Number of TP orders placed
         """
         tp_placed = 0
 
-        # Get all open orders from CLOB API
+        if price_cache is None:
+            price_cache = {}
+
+        # STEP 1: Get ALL positions from Data API
+        print("    [1] Fetching all positions from Data API...")
+        all_positions = self.client.get_all_positions()
+
+        if not all_positions:
+            print("    No positions found")
+            return 0
+
+        print(f"    Found {len(all_positions)} positions")
+
+        # STEP 2: Get ALL open orders from CLOB API
+        print("    [2] Fetching all open orders...")
         all_open_orders = self.client.get_open_orders()
 
-        # Get markets with tracked orders
-        markets = self.order_monitor.get_markets_with_orders()
+        # Build a map of existing SELL orders: token_id -> total sell size
+        existing_sell_orders = {}
+        for order in all_open_orders:
+            if order.get('side') == 'SELL':
+                token_id = order.get('asset_id')
+                size = Decimal(str(order.get('original_size', 0)))
+                if token_id not in existing_sell_orders:
+                    existing_sell_orders[token_id] = Decimal("0")
+                existing_sell_orders[token_id] += size
 
-        for market_slug in markets:
-            # Skip if already profitable
-            if market_slug in already_profitable_markets:
-                continue
+        print(f"    Found {len(existing_sell_orders)} tokens with SELL orders")
 
-            # Get tracked orders for this market
-            market_orders = self.order_monitor.get_active_orders_by_market(market_slug)
+        # STEP 3: Process each position
+        print("    [3] Processing positions...")
 
-            # Group by token_id (handle both strong and weak team orders)
-            tokens_in_market = {}
+        for position in all_positions:
+            try:
+                # Extract position data
+                token_id = position.get('asset')
+                position_size = Decimal(str(position.get('size', 0)))
+                market_slug = position.get('slug', 'unknown')
+                outcome = position.get('outcome', 'unknown')
+                avg_price = Decimal(str(position.get('avgPrice', 0)))
 
-            for order_data in market_orders:
-                if order_data['side'] != 'BUY':
+                # Skip tiny positions
+                if position_size < Decimal("0.1"):
                     continue
 
-                token_id = order_data['token_id']
-                if token_id not in tokens_in_market:
-                    tokens_in_market[token_id] = {
-                        'buy_orders': [],
-                        'strong_team_price_cents': order_data.get('strong_team_price_cents')
-                    }
-
-                tokens_in_market[token_id]['buy_orders'].append(order_data)
-
-            # Check each token (team) in this market
-            for token_id, token_data in tokens_in_market.items():
-                buy_orders = token_data['buy_orders']
-                strong_team_price_cents = token_data['strong_team_price_cents']
-
-                # Count how many BUY orders still open (not filled)
-                open_buy_count = sum(
-                    1 for order in all_open_orders
-                    if order.get('asset_id') == token_id and order.get('side') == 'BUY'
-                )
-
-                # Count filled entries = total entries - open entries
-                total_entries = len(buy_orders)
-                filled_entries_count = total_entries - open_buy_count
-
-                # Get current position size
-                position_size = self.client.get_token_balance(token_id)
-
-                if position_size <= 0:
-                    continue  # No position, skip
+                # Skip already profitable markets if specified
+                if market_slug in already_profitable_markets:
+                    continue
 
                 # Check existing SELL orders for this token
-                existing_sell_size = sum(
-                    Decimal(str(order.get('original_size', 0)))
-                    for order in all_open_orders
-                    if order.get('asset_id') == token_id and order.get('side') == 'SELL'
-                )
+                existing_sell_size = existing_sell_orders.get(token_id, Decimal("0"))
 
-                # Calculate how much we need to sell
+                # Calculate unsold position
                 unsold_position = position_size - existing_sell_size
 
-                if unsold_position <= Decimal("0.01"):
-                    continue  # Already have enough sell orders
+                if unsold_position <= Decimal("0.1"):
+                    # Already have enough sell orders
+                    continue
 
-                # Build filled_entries list for strategy
-                filled_entries = []
-                for i, order_data in enumerate(buy_orders[:filled_entries_count]):
-                    filled_entries.append({
-                        'entry_number': order_data.get('entry_number', i + 1),
-                        'price': order_data['price']
-                    })
+                # STEP 4: Get start price from price_cache
+                cache_key = f"{market_slug}:{token_id}"
+                start_price_data = price_cache.get(cache_key)
 
-                # Mark filled orders
-                for order_data in buy_orders[:filled_entries_count]:
-                    self.order_monitor.mark_order_filled(order_data['order_id'])
+                if not start_price_data:
+                    # Try to find from order tracking
+                    # Look for BUY orders for THIS token_id to get entry price
+                    tracked_orders = self.order_monitor.get_active_orders_by_market(market_slug)
+                    strong_team_price_cents = None
+                    entry_price = None
+                    filled_entry_numbers = set()
 
-                # Calculate TP orders
-                if strong_team_price_cents:
-                    tp_specs = strategy.calculate_take_profit_orders(
-                        filled_entries=filled_entries,
-                        strong_team_start_price_cents=strong_team_price_cents,
-                        total_position_size=unsold_position  # Only sell what's not already in orders
-                    )
+                    for order_data in tracked_orders:
+                        # Record strong_team_price_cents for strategy
+                        if order_data.get('strong_team_price_cents'):
+                            strong_team_price_cents = order_data.get('strong_team_price_cents')
 
-                    # Place TP orders
-                    for tp_spec in tp_specs:
-                        tp_order_id = self.place_take_profit_orders(
-                            token_id=token_id,
-                            market_slug=market_slug,
-                            team_name=tp_spec['label'],
-                            tp_price=tp_spec['price'],
-                            position_size=tp_spec['size']
-                        )
+                        # If this order is for our token, get the entry price and entry number
+                        if order_data.get('token_id') == token_id and order_data.get('side') == 'BUY':
+                            entry_price = Decimal(str(order_data.get('price', 0)))
+                            if order_data.get('entry_number'):
+                                filled_entry_numbers.add(order_data.get('entry_number'))
 
-                        if tp_order_id:
-                            tp_placed += 1
+                    if entry_price and strong_team_price_cents:
+                        start_price_data = {
+                            'price': str(entry_price),
+                            'strong_team_price_cents': strong_team_price_cents,
+                            'filled_entry_numbers': filled_entry_numbers
+                        }
+
+                if not start_price_data:
+                    # No cached price - skip this position (let user manage manually)
+                    print(f"      [!] No cached price for {outcome} in {market_slug} - skipping (manual management)")
+                    continue
+
+                # Get strong team price and entry price for TP calculation
+                strong_team_price_cents = start_price_data.get('strong_team_price_cents')
+                entry_price = Decimal(str(start_price_data.get('price', 0)))
+                entry_price_cents = float(entry_price * 100)
+
+                if not strong_team_price_cents:
+                    print(f"      [!] No strong team price for {outcome} in {market_slug} - skipping")
+                    continue
+
+                strong_price_cents = float(strong_team_price_cents)
+
+                # Rule: If strong team > 75 cents, no TP (run to resolution)
+                if strong_price_cents > 75:
+                    print(f"      [!] {outcome}: Strong team @ {strong_price_cents:.1f}c > 75c - no TP, run to resolution")
+                    continue
+
+                # STEP 5: Apply TP strategy based on strong team price
+
+                # BALANCED MATCH: Strong ≤ 60¢
+                # Each team has only 1 entry, TP immediately when filled
+                if strong_price_cents <= 60:
+                    # Determine if this is strong or weak team based on entry price
+                    # Strong team entry = 25¢, Weak team entry = 22¢
+                    if entry_price_cents >= 24:  # Strong team (entry ~25¢)
+                        tp_price = Decimal(str(strong_price_cents)) / Decimal("100") - Decimal("0.02")
+                        print(f"      [BALANCED] {outcome} is STRONG team, TP = {strong_price_cents:.1f}c - 2c")
+                    else:  # Weak team (entry ~22¢)
+                        # TP = 102 - strong_price (in cents), then convert to decimal
+                        tp_price_cents = 102 - strong_price_cents
+                        tp_price = Decimal(str(tp_price_cents)) / Decimal("100")
+                        print(f"      [BALANCED] {outcome} is WEAK team, TP = 102 - {strong_price_cents:.1f}c = {tp_price_cents:.1f}c")
+
+                # NON-BALANCED MATCH: Strong 61-75¢
+                else:
+                    # Rule: Only TP if both entries filled (entry 1 and 2)
+                    filled_entries = start_price_data.get('filled_entry_numbers', set())
+                    num_entries_filled = len(filled_entries)
+
+                    if num_entries_filled < 2:
+                        print(f"      [!] {outcome}: Only {num_entries_filled} entry filled - no TP, run to resolution")
+                        continue
+
+                    # Both entries filled: TP at strong team's start price - 2 cents
+                    tp_price = Decimal(str(strong_price_cents)) / Decimal("100") - Decimal("0.02")
+
+                print(f"\n      Position: {outcome} ({market_slug})")
+                print(f"        Size: {position_size:.2f} | SELL: {existing_sell_size:.2f} | Unsold: {unsold_position:.2f}")
+                print(f"        TP Price: ${tp_price:.3f}")
+
+                # Place TP order for unsold position
+                tp_order_id = self.place_take_profit_orders(
+                    token_id=token_id,
+                    market_slug=market_slug,
+                    team_name=outcome,
+                    tp_price=tp_price,
+                    position_size=unsold_position
+                )
+
+                if tp_order_id:
+                    tp_placed += 1
+                    # Update existing_sell_orders to avoid duplicate
+                    existing_sell_orders[token_id] = existing_sell_orders.get(token_id, Decimal("0")) + unsold_position
+
+            except Exception as e:
+                print(f"      [X] Error processing position: {e}")
+                continue
+
+        # STEP 6: Final verification
+        print(f"\n    [4] Summary: Placed {tp_placed} TP orders")
 
         return tp_placed

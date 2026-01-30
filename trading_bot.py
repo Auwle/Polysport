@@ -5,9 +5,11 @@ Scans markets, places entry orders, monitors positions, and manages take profits
 
 import sys
 import time
+import json
+import os
 from decimal import Decimal
 from datetime import datetime
-from typing import Set
+from typing import Set, Dict
 
 from src.api.polymarket_client import create_client_from_env
 from src.scanner.market_scanner import MarketScanner
@@ -25,7 +27,7 @@ class LOLTradingBot:
     def __init__(
         self,
         check_interval_seconds: int = 300,  # 5 minutes
-        entry_size_usd: Decimal = Decimal("5"),
+        entry_size_usd: Decimal = Decimal("3.5"),
         min_volume_usd: Decimal = Decimal("1000"),
         max_total_price: Decimal = Decimal("110"),
         min_strong_team_price: Decimal = Decimal("60")
@@ -35,7 +37,7 @@ class LOLTradingBot:
 
         Args:
             check_interval_seconds: Time between checks (default 300s = 5min)
-            entry_size_usd: Size of each entry in USD (default $5)
+            entry_size_usd: Size of each entry in USD (default $3.5)
             min_volume_usd: Minimum market volume (default $1000)
             max_total_price: Maximum total price of both teams (default 110¢)
             min_strong_team_price: Minimum strong team price (default 60¢)
@@ -64,12 +66,26 @@ class LOLTradingBot:
         # Track markets we've already placed orders on
         self.markets_with_orders: Set[str] = set()
 
+        # Load price cache
+        self.price_cache = self._load_price_cache()
+
         print(f"\n[OK] Bot initialized successfully")
         print(f"  - Check interval: {check_interval_seconds}s ({check_interval_seconds//60}min)")
         print(f"  - Entry size: ${entry_size_usd}")
         print(f"  - Min volume: ${min_volume_usd}")
         print(f"  - Max total price: {max_total_price}¢")
         print(f"  - Min strong team price: {min_strong_team_price}¢")
+
+    def _load_price_cache(self) -> Dict:
+        """Load price cache from file."""
+        cache_file = "data/price_cache.json"
+        if os.path.exists(cache_file):
+            try:
+                with open(cache_file, 'r') as f:
+                    return json.load(f)
+            except Exception as e:
+                print(f"Error loading price cache: {e}")
+        return {}
 
     def add_profitable_market(self, market_slug: str):
         """
@@ -235,9 +251,12 @@ class LOLTradingBot:
 
         # Step 5: Check filled positions and set take profits
         print("\n[5] Checking filled positions...")
+        # Reload price cache in case it was updated
+        self.price_cache = self._load_price_cache()
         tp_placed = self.executor.check_filled_positions_and_set_tp(
             strategy=self.strategy,
-            already_profitable_markets=self.already_profitable_markets
+            already_profitable_markets=self.already_profitable_markets,
+            price_cache=self.price_cache
         )
 
         if tp_placed > 0:
@@ -295,7 +314,7 @@ def main():
     # Create and configure bot
     bot = LOLTradingBot(
         check_interval_seconds=60,  # 1 minute
-        entry_size_usd=Decimal("5"),
+        entry_size_usd=Decimal("3.5"),
         min_volume_usd=Decimal("1000"),
         max_total_price=Decimal("110"),
         min_strong_team_price=Decimal("0")  # Allow balanced matches (≤60¢)
